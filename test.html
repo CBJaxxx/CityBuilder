@@ -1,0 +1,949 @@
+I have updated the code to implement **dynamic road markings**.
+
+### The Logic
+1.  **Visual Separation:** I separated the Road creation into two meshes: the **Asphalt** (gray box) and the **Yellow Line** (yellow plane).
+2.  **Connectivity Check:** I added a function `updateRoadVisuals(gridX, gridZ, mesh)` that counts how many neighboring road tiles exist (Up, Down, Left, Right).
+3.  **Visibility Rule:**
+    *   If the road has **0, 1, or 2 neighbors**, it is considered a "terminal" or "straight" road, so it **shows the yellow line**.
+    *   If the road has **3 or 4 neighbors** (an intersection, T-junction, or crossroads), it **hides the yellow line** (simulating a paved plaza or crossing).
+
+### The Code
+Save this as an `.html` file.
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>MicroCity 3D - Dynamic Roads</title>
+    <style>
+        :root {
+            --panel-bg: rgba(20, 25, 35, 0.9);
+            --accent: #4cc9f0;
+            --text: #ffffff;
+            --danger: #ef476f;
+            --success: #06d6a0;
+        }
+
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', sans-serif; background: #87CEEB; user-select: none; }
+        
+        #canvas-container { width: 100vw; height: 100vh; display: block; position: absolute; top: 0; left: 0; z-index: 1; }
+
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; display: flex; flex-direction: column; justify-content: space-between;
+            z-index: 10;
+        }
+
+        header, footer { pointer-events: auto; background: var(--panel-bg); padding: 12px 20px; backdrop-filter: blur(5px); color: var(--text); }
+        
+        header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        h1 { margin: 0; font-size: 1.4rem; color: var(--accent); }
+        
+        .stats-bar { display: flex; gap: 20px; text-align: center; }
+        .stat-box { display: flex; flex-direction: column; }
+        .stat-label { font-size: 0.7rem; color: #aaa; text-transform: uppercase; }
+        .stat-val { font-size: 1.1rem; font-weight: bold; }
+
+        footer { display: flex; justify-content: center; gap: 10px; overflow-x: auto; border-top: 1px solid rgba(255,255,255,0.1); padding-bottom: 20px; }
+
+        .tool-btn {
+            background: rgba(255,255,255,0.1); border: 2px solid transparent; border-radius: 8px;
+            padding: 10px; color: white; cursor: pointer; display: flex; flex-direction: column; align-items: center; min-width: 70px; transition: 0.2s;
+        }
+        .tool-btn:hover { background: rgba(255,255,255,0.2); transform: translateY(-2px); }
+        .tool-btn.active { border-color: var(--success); background: rgba(6, 214, 160, 0.2); }
+        .tool-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .tool-name { font-size: 0.75rem; margin-top: 5px; font-weight: bold; }
+        .tool-cost { font-size: 0.7rem; color: #ccc; }
+
+        .toast-container { position: absolute; top: 80px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+        .toast { background: rgba(0,0,0,0.8); color: white; padding: 8px 16px; border-radius: 20px; font-size: 0.9rem; animation: fadeOut 2.5s forwards; }
+        @keyframes fadeOut { 0% { opacity: 0; transform: translateY(10px); } 10% { opacity: 1; transform: translateY(0); } 80% { opacity: 1; } 100% { opacity: 0; transform: translateY(-10px); } }
+
+        .money-popup {
+            position: absolute; font-weight: bold; font-size: 1.2rem; pointer-events: none;
+            animation: floatMoney 1.2s ease-out forwards; text-shadow: 0 2px 4px rgba(0,0,0,0.6);
+            z-index: 20; white-space: nowrap;
+        }
+        .money-pos { color: var(--success); }
+        .money-neg { color: var(--danger); }
+        @keyframes floatMoney {
+            0% { opacity: 1; transform: translateY(0) scale(1); }
+            100% { opacity: 0; transform: translateY(-50px) scale(1.1); }
+        }
+
+        #building-tooltip {
+            position: absolute; background: rgba(0, 0, 0, 0.8); color: white;
+            padding: 8px 12px; border-radius: 6px; font-size: 0.85rem;
+            pointer-events: none; display: none; border: 1px solid rgba(255,255,255,0.2); z-index: 50; white-space: nowrap;
+        }
+        #building-tooltip .income-pos { color: var(--success); font-weight: bold; }
+        #building-tooltip .income-neg { color: var(--danger); font-weight: bold; }
+
+        .modal {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 100;
+            display: flex; justify-content: center; align-items: center; pointer-events: auto; backdrop-filter: blur(5px);
+        }
+        .modal-content { background: #2b2d42; padding: 30px; border-radius: 12px; max-width: 500px; color: white; border: 1px solid #5c677d; }
+        .btn { background: var(--success); border: none; padding: 10px 20px; font-weight: bold; border-radius: 5px; cursor: pointer; margin-top: 15px; color: #000; }
+        .btn:hover { filter: brightness(1.1); }
+        
+        .hint { font-size: 0.8rem; color: #aaa; margin-top: 10px; line-height: 1.4; }
+        .key { background: #444; padding: 2px 6px; border-radius: 4px; border: 1px solid #666; color: white; font-weight: bold; font-family: monospace; }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+    <div id="building-tooltip"></div>
+
+    <div id="ui-layer">
+        <header>
+            <div>
+                <h1>MicroCity 3D</h1>
+                <div style="font-size: 0.8rem; color: #aaa;">Version 19.1 (Dynamic Roads)</div>
+            </div>
+            <div class="stats-bar">
+                <div class="stat-box">
+                    <span class="stat-label">Population</span>
+                    <span class="stat-val"><span id="stat-pop">0</span> / <span id="stat-cap">0</span></span>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-label">Funds</span>
+                    <span class="stat-val money-val" id="stat-money">$1500</span>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-label">Income</span>
+                    <span class="stat-val" id="stat-income" style="color:#ffd700">+0</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="toast-container" id="toast-area"></div>
+
+        <footer id="toolbar"></footer>
+    </div>
+
+    <div class="modal" id="welcome-modal">
+        <div class="modal-content">
+            <h2 style="color:var(--accent)">City Planner</h2>
+            <ul class="hint">
+                <li>🧵 <strong>Dynamic Lines:</strong> Road lines disappear at intersections (3+ connections).</li>
+                <li>🔄 <strong>Q/E</strong> Rotate Camera.</li>
+                <li>🖱️ <strong>Scroll</strong> Rotate Building.</li>
+            </ul>
+            <button class="btn" onclick="document.getElementById('welcome-modal').style.display='none'">Start Building</button>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- Config ---
+        const GRID_SIZE = 16;
+        const TILE_SIZE = 4;
+        const TICK_RATE = 2000; 
+        const POP_GROWTH_RATE = 1000;
+
+        const BUILDINGS = {
+            road: { id: 'road', name: 'Road', icon: '🛣️', cost: 20, income: 0, popCap: 0, workersReq: 0 },
+            house: { id: 'house', name: 'House', icon: '🏠', cost: 150, income: 10, popCap: 5, workersReq: 0 },
+            apartment: { id: 'apartment', name: 'Apt.', icon: '🏢', cost: 600, income: 40, popCap: 20, workersReq: 0 },
+            shop: { id: 'shop', name: 'Shop', icon: '🏪', cost: 300, income: 60, popCap: 0, workersReq: 5 },
+            factory: { id: 'factory', name: 'Factory', icon: '🏭', cost: 800, income: 150, popCap: 0, workersReq: 15 },
+            park: { id: 'park', name: 'Park', icon: '🌳', cost: 100, income: -5, popCap: 0, workersReq: 0 },
+            demolish: { id: 'demolish', name: 'Clear', icon: '🏗️', cost: 15, income: 0, popCap: 0, workersReq: 0 }
+        };
+
+        // --- State ---
+        let state = {
+            money: 1500,
+            population: 0,
+            popCap: 0,
+            grid: [], 
+            selectedTool: null,
+            agents: [],
+            buildRot: 0
+        };
+
+        const keysPressed = {};
+
+        // --- Three.js Globals ---
+        let scene, camera, renderer, controls;
+        let raycaster, pointer;
+        let hoverMesh, ghostMesh;
+        let gridGroup, agentsGroup;
+        let clock = new THREE.Clock();
+        const tooltip = document.getElementById('building-tooltip');
+        let debugEl = null; 
+
+        // --- Init ---
+        init();
+        animate();
+
+        function init() {
+            const container = document.getElementById('canvas-container');
+
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 30, 120);
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(40, 40, 40); 
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            container.appendChild(renderer.domElement);
+
+            // Controls Configuration
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.maxPolarAngle = Math.PI / 3; 
+            controls.minPolarAngle = Math.PI / 3;
+            controls.enableRotate = false; 
+            controls.mouseButtons = {
+                LEFT: null,
+                MIDDLE: null,
+                RIGHT: THREE.MOUSE.PAN 
+            };
+            controls.target.set(0, 0, 0); // Fixed for math consistency
+
+            // Create Debug Element ONCE (Safety)
+            debugEl = document.createElement('div');
+            debugEl.id = 'camera-debug';
+            debugEl.style.position = 'absolute';
+            debugEl.style.top = '10px';
+            debugEl.style.left = '10px';
+            debugEl.style.color = '#ffffff';
+            debugEl.style.fontFamily = 'monospace';
+            debugEl.style.fontSize = '14px';
+            debugEl.style.fontWeight = 'bold';
+            debugEl.style.padding = '5px 10px';
+            debugEl.style.backgroundColor = 'rgba(0,0,0,0.7)';
+            debugEl.style.borderRadius = '5px';
+            debugEl.style.border = '1px solid white';
+            debugEl.style.zIndex = '100';
+            document.body.appendChild(debugEl);
+
+            // Keyboard Listeners
+            window.addEventListener('keydown', (e) => keysPressed[e.code] = true);
+            window.addEventListener('keyup', (e) => keysPressed[e.code] = false);
+
+            // Scroll Wheel Logic
+            window.addEventListener('wheel', (e) => {
+                if (state.selectedTool) {
+                    e.preventDefault(); 
+                    if (e.deltaY > 0) state.buildRot -= Math.PI / 2;
+                    else state.buildRot += Math.PI / 2;
+                    updateGhostVisuals();
+                }
+            }, { passive: false });
+
+            // Lights
+            const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambient);
+
+            const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+            sun.position.set(50, 100, 50);
+            sun.castShadow = true;
+            sun.shadow.mapSize.width = 2048;
+            sun.shadow.mapSize.height = 2048;
+            sun.shadow.camera.near = 0.5;
+            sun.shadow.camera.far = 200;
+            sun.shadow.camera.left = -60; sun.shadow.camera.right = 60;
+            sun.shadow.camera.top = 60; sun.shadow.camera.bottom = -60;
+            scene.add(sun);
+
+            // Ground
+            const planeGeo = new THREE.PlaneGeometry(200, 200);
+            const planeMat = new THREE.MeshStandardMaterial({ color: 0x4caf50 });
+            const plane = new THREE.Mesh(planeGeo, planeMat);
+            plane.rotation.x = -Math.PI / 2;
+            plane.receiveShadow = true;
+            scene.add(plane);
+
+            // Invisible Hit Plane
+            const hitGeo = new THREE.PlaneGeometry(GRID_SIZE * TILE_SIZE, GRID_SIZE * TILE_SIZE);
+            const hitMat = new THREE.MeshBasicMaterial({ visible: false });
+            plane.userData.hitPlane = new THREE.Mesh(hitGeo, hitMat);
+            plane.userData.hitPlane.rotation.x = -Math.PI/2;
+            scene.add(plane.userData.hitPlane);
+
+            // Groups
+            gridGroup = new THREE.Group();
+            agentsGroup = new THREE.Group();
+            scene.add(gridGroup);
+            scene.add(agentsGroup);
+
+            // Helpers
+            raycaster = new THREE.Raycaster();
+            pointer = new THREE.Vector2();
+
+            const highGeo = new THREE.BoxGeometry(TILE_SIZE, 0.2, TILE_SIZE);
+            const highMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.4 });
+            hoverMesh = new THREE.Mesh(highGeo, highMat);
+            scene.add(hoverMesh);
+
+            ghostMesh = new THREE.Group();
+            scene.add(ghostMesh);
+
+            initGrid();
+            createToolbar();
+            updateUI();
+
+            window.addEventListener('resize', onResize);
+            renderer.domElement.addEventListener('pointermove', onMove);
+            renderer.domElement.addEventListener('pointerdown', onClick);
+
+            setInterval(economyTick, TICK_RATE);
+            setInterval(populationTick, POP_GROWTH_RATE);
+        }
+
+        // --- Camera Rotation Helper ---
+        function updateCameraRotation() {
+            const speed = 0.03;
+            if (keysPressed['KeyQ']) rotateCameraManual(speed);
+            if (keysPressed['KeyE']) rotateCameraManual(-speed);
+        }
+
+        function rotateCameraManual(angleDelta) {
+            const x = camera.position.x;
+            const z = camera.position.z;
+            const cosA = Math.cos(angleDelta);
+            const sinA = Math.sin(angleDelta);
+            camera.position.x = x * cosA - z * sinA;
+            camera.position.z = x * sinA + z * cosA;
+            camera.lookAt(controls.target);
+            controls.update();
+        }
+
+        function initGrid() {
+            for (let x = 0; x < GRID_SIZE; x++) {
+                state.grid[x] = [];
+                for (let z = 0; z < GRID_SIZE; z++) {
+                    state.grid[x][z] = null;
+                }
+            }
+        }
+
+        // --- Logic: Connectivity ---
+
+        function getRoadNeighbors(x, z) {
+            const neighbors = [];
+            const directions = [
+                { dx: 1, dz: 0 }, { dx: -1, dz: 0 }, { dx: 0, dz: 1 }, { dx: 0, dz: -1 }
+            ];
+            directions.forEach(dir => {
+                const nx = x + dir.dx;
+                const nz = z + dir.dz;
+                if (nx >= 0 && nx < GRID_SIZE && nz >= 0 && nz < GRID_SIZE) {
+                    if (state.grid[nx][nz] && state.grid[nx][nz].type === 'road') {
+                        neighbors.push({ x: nx, z: nz, dir: dir });
+                    }
+                }
+            });
+            return neighbors;
+        }
+
+        // --- NEW: DYNAMIC ROAD UPDATER ---
+        
+        // Updates the visibility of the yellow line based on neighbor count
+        function updateRoadVisuals(x, z, mesh) {
+            // Find the yellow line child (we named it 'roadLine' during creation)
+            const lineMesh = mesh.getObjectByName('roadLine');
+            if (!lineMesh) return;
+
+            const neighbors = getRoadNeighbors(x, z);
+            
+            // If connected to 3 or 4 roads (Intersection/Cross), hide the line.
+            // If 0, 1, or 2 (End/Curve/Straight), show the line.
+            if (neighbors.length >= 3) {
+                lineMesh.visible = false;
+            } else {
+                lineMesh.visible = true;
+            }
+        }
+
+        // Call this when a road is placed to update itself and neighbors
+        function refreshRoadArea(x, z) {
+            const directions = [
+                { dx: 0, dz: 0 }, // Self
+                { dx: 1, dz: 0 }, { dx: -1, dz: 0 }, { dx: 0, dz: 1 }, { dx: 0, dz: -1 } // Neighbors
+            ];
+
+            directions.forEach(dir => {
+                const nx = x + dir.dx;
+                const nz = z + dir.dz;
+                if (nx >= 0 && nx < GRID_SIZE && nz >= 0 && nz < GRID_SIZE) {
+                    const cell = state.grid[nx][nz];
+                    if (cell && cell.type === 'road' && cell.mesh) {
+                        updateRoadVisuals(nx, nz, cell.mesh);
+                    }
+                }
+            });
+        }
+
+        // --- Original Connectivity Logic ---
+
+        function hasRoadConnection(x, z) {
+            let roadCount = 0;
+            for(let i=0; i<GRID_SIZE; i++) for(let j=0; j<GRID_SIZE; j++) 
+                if(state.grid[i][j] && state.grid[i][j].type === 'road') roadCount++;
+            if (roadCount === 0) return true;
+            return getRoadNeighbors(x, z).length > 0;
+        }
+
+        // --- ROBUST DIRECTION CALCULATION (VECTOR MATH) ---
+
+        // Returns 0 (South), 1 (West), 2 (North), 3 (East)
+        function getFacingDirectionFromRotation(rot) {
+            const q = new THREE.Quaternion();
+            q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot);
+            const forward = new THREE.Vector3(0, 0, 1);
+            forward.applyQuaternion(q);
+            const dx = Math.round(forward.x);
+            const dz = Math.round(forward.z);
+
+            if (dz === 1) return 0; 
+            if (dx === -1) return 1; 
+            if (dz === -1) return 2; 
+            if (dx === 1) return 3; 
+
+            return 0; 
+        }
+
+        // --- SNAPPING LOGIC ---
+
+        function getInitialSnapRotation(x, z) {
+            const neighbors = getRoadNeighbors(x, z);
+            if (neighbors.length === 0) return 0;
+            const road = neighbors[0]; 
+            if (road.dz === 1) return 0;
+            if (road.dz === -1) return Math.PI;
+            if (road.dx === 1) return -Math.PI / 2;
+            if (road.dx === -1) return Math.PI / 2;
+            return 0;
+        }
+
+        function isDoorFacingAnyRoad(x, z, currentRot) {
+            let roadCount = 0;
+            for(let i=0; i<GRID_SIZE; i++) for(let j=0; j<GRID_SIZE; j++) 
+                if(state.grid[i][j] && state.grid[i][j].type === 'road') roadCount++;
+            if (roadCount === 0) return true; 
+
+            const facingIdx = getFacingDirectionFromRotation(currentRot);
+            if (facingIdx === 0) {
+                const nz = z + 1;
+                if (nz >= 0 && nz < GRID_SIZE && state.grid[x][nz] && state.grid[x][nz].type === 'road') return true;
+            }
+            else if (facingIdx === 1) {
+                const nx = x - 1;
+                if (nx >= 0 && nx < GRID_SIZE && state.grid[nx][z] && state.grid[nx][z].type === 'road') return true;
+            }
+            else if (facingIdx === 2) {
+                const nz = z - 1;
+                if (nz >= 0 && nz < GRID_SIZE && state.grid[x][nz] && state.grid[x][nz].type === 'road') return true;
+            }
+            else if (facingIdx === 3) {
+                const nx = x + 1;
+                if (nx >= 0 && nx < GRID_SIZE && state.grid[nx][z] && state.grid[nx][z].type === 'road') return true;
+            }
+            return false;
+        }
+
+        // --- 3D Models (Updated for Roads) ---
+
+        function createBuildingMesh(type) {
+            const group = new THREE.Group();
+            const matWall = new THREE.MeshStandardMaterial({ color: 0xeeeeee });
+            const matWindow = new THREE.MeshStandardMaterial({ color: 0x87CEEB, roughness: 0.1, metalness: 0.8 });
+            const matDoor = new THREE.MeshStandardMaterial({ color: 0x5d4037 });
+
+            if (type === 'road') {
+                // 1. Asphalt Base
+                const mesh = new THREE.Mesh(new THREE.BoxGeometry(TILE_SIZE, 0.2, TILE_SIZE), new THREE.MeshStandardMaterial({color: 0x555555}));
+                mesh.position.y = 0.1; mesh.receiveShadow = true;
+                group.add(mesh);
+
+                // 2. Yellow Line (Named 'roadLine' for later access)
+                const line = new THREE.Mesh(new THREE.PlaneGeometry(0.3, TILE_SIZE - 0.5), new THREE.MeshBasicMaterial({color: 0xffff00}));
+                line.rotation.x = -Math.PI/2; line.position.y = 0.21;
+                line.name = 'roadLine'; // Important for updateRoadVisuals
+                group.add(line);
+            }
+            else if (type === 'house') {
+                const w = 3.2, d = 3.2, h = 2.5;
+                const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), matWall);
+                body.position.y = h/2; body.castShadow = true; body.receiveShadow = true;
+                group.add(body);
+                const door = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.5, 0.2), matDoor);
+                door.position.set(0, 0.75, d/2 + 0.05);
+                group.add(door);
+                const win = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 0.2), matWindow);
+                win.position.set(0, 1.8, d/2 + 0.05);
+                group.add(win);
+                const roof = new THREE.Mesh(new THREE.ConeGeometry(2.5, 1.2, 4), new THREE.MeshStandardMaterial({color: 0xb22222}));
+                roof.position.y = h + 0.6; roof.rotation.y = Math.PI/4; roof.castShadow = true;
+                group.add(roof);
+            }
+            else if (type === 'apartment') {
+                const w = 3.6, d = 3.6, h = 6;
+                const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({color: 0xf5f5f5}));
+                body.position.y = h/2; body.castShadow = true;
+                group.add(body);
+                const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.2, 0.2), matDoor);
+                door.position.set(0, 1.1, d/2 + 0.05);
+                group.add(door);
+                for(let row=0; row<3; row++) {
+                    for(let col=0; col<2; col++) {
+                        const wx = (col===0 ? -0.8 : 0.8);
+                        const wy = 3 + (row * 1.5);
+                        const win = new THREE.Mesh(new THREE.BoxGeometry(1, 1.2, 0.2), matWindow);
+                        win.position.set(wx, wy, d/2 + 0.05);
+                        group.add(win);
+                    }
+                }
+            }
+            else if (type === 'shop') {
+                const w = 3.8, d = 3.8, h = 3;
+                const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({color: 0xffe0b2}));
+                body.position.y = h/2; body.castShadow = true;
+                group.add(body);
+                const glass = new THREE.Mesh(new THREE.BoxGeometry(w, 2, 0.1), new THREE.MeshStandardMaterial({color: 0xadd8e6, transparent:true, opacity:0.7}));
+                glass.position.set(0, 1.5, d/2 + 0.1);
+                group.add(glass);
+                const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.2, 0.1), matDoor);
+                door.position.set(0, 1.1, d/2 + 0.15);
+                group.add(door);
+                const awning = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.2, 1), new THREE.MeshStandardMaterial({color: 0xe53935}));
+                awning.position.set(0, 2.6, d/2 + 0.4);
+                group.add(awning);
+            }
+            else if (type === 'factory') {
+                const w = 3.8, d = 3.8, h = 3.5;
+                const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({color: 0x9e9e9e}));
+                body.position.y = h/2; body.castShadow = true;
+                group.add(body);
+                const gar = new THREE.Mesh(new THREE.BoxGeometry(2.5, 2, 0.2), new THREE.MeshStandardMaterial({color: 0x424242}));
+                gar.position.set(0, 1, d/2 + 0.1);
+                group.add(gar);
+                const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 2, 12), new THREE.MeshStandardMaterial({color: 0x212121}));
+                stack.position.set(1, h + 1, 1); stack.castShadow = true;
+                group.add(stack);
+            }
+            else if (type === 'park') {
+                const base = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 0.2, 8), new THREE.MeshStandardMaterial({color: 0x388e3c}));
+                base.position.y = 0.1;
+                group.add(base);
+                const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 1.5, 6), new THREE.MeshStandardMaterial({color: 0x5d4037}));
+                trunk.position.y = 0.75;
+                group.add(trunk);
+                const leaves = new THREE.Mesh(new THREE.DodecahedronGeometry(1.2), new THREE.MeshStandardMaterial({color: 0x4caf50}));
+                leaves.position.y = 2; leaves.castShadow = true;
+                group.add(leaves);
+            }
+
+            return group;
+        }
+
+        // --- Agents ---
+        function updateAgents() {
+            const targetCount = Math.floor(state.population / 4);
+            if (state.agents.length < targetCount) spawnAgentOnRoad();
+            else if (state.agents.length > targetCount) {
+                const a = state.agents.pop();
+                agentsGroup.remove(a);
+            }
+
+            state.agents.forEach(agent => {
+                agent.userData.t += 0.005;
+                if (agent.userData.t >= 1) {
+                    const currentGx = agent.userData.gx;
+                    const currentGz = agent.userData.gz;
+                    const neighbors = getRoadNeighbors(currentGx, currentGz);
+                    if (neighbors.length > 0) {
+                        const next = neighbors[Math.floor(Math.random() * neighbors.length)];
+                        agent.userData.gx = next.x; agent.userData.gz = next.z;
+                        agent.userData.start = agent.position.clone();
+                        const wx = (next.x * TILE_SIZE) - ((GRID_SIZE * TILE_SIZE)/2);
+                        const wz = (next.z * TILE_SIZE) - ((GRID_SIZE * TILE_SIZE)/2);
+                        agent.userData.target = new THREE.Vector3(wx, 0, wz);
+                        agent.userData.t = 0;
+                        agent.lookAt(agent.userData.target);
+                    } else {
+                        agent.userData.t = 0.9; 
+                    }
+                } else {
+                    agent.position.lerpVectors(agent.userData.start, agent.userData.target, agent.userData.t);
+                }
+                agent.children[1].position.y = 0.9 + Math.sin(Date.now() * 0.015) * 0.1;
+            });
+        }
+
+        function spawnAgentOnRoad() {
+            let attempts = 0;
+            let placed = false;
+            while(!placed && attempts < 50) {
+                const gx = Math.floor(Math.random() * GRID_SIZE);
+                const gz = Math.floor(Math.random() * GRID_SIZE);
+                if (state.grid[gx][gz] && state.grid[gx][gz].type === 'road') {
+                    const wx = (gx * TILE_SIZE) - ((GRID_SIZE * TILE_SIZE)/2);
+                    const wz = (gz * TILE_SIZE) - ((GRID_SIZE * TILE_SIZE)/2);
+                    const group = new THREE.Group();
+                    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.5, 4, 8), new THREE.MeshLambertMaterial({ color: Math.random() * 0xffffff }));
+                    body.position.y = 0.4;
+                    const head = new THREE.Mesh(new THREE.SphereGeometry(0.12), new THREE.MeshLambertMaterial({ color: 0xffccaa }));
+                    head.position.y = 0.85;
+                    group.add(body); group.add(head);
+                    group.position.set(wx, 0, wz);
+                    group.userData = { gx, gz, start: group.position.clone(), target: group.position.clone(), t: 1 };
+                    agentsGroup.add(group);
+                    state.agents.push(group);
+                    placed = true;
+                }
+                attempts++;
+            }
+        }
+
+        // --- Visual Feedback ---
+
+        function spawnMoneyPopup(position3D, amount) {
+            const vec = position3D.clone();
+            vec.y += 5; 
+            vec.project(camera);
+            const x = (vec.x * .5 + .5) * window.innerWidth;
+            const y = (-(vec.y * .5) + .5) * window.innerHeight;
+            const el = document.createElement('div');
+            el.className = 'money-popup ' + (amount >= 0 ? 'money-pos' : 'money-neg');
+            el.innerText = (amount > 0 ? '+$' : '-$') + Math.abs(amount);
+            el.style.left = x + 'px';
+            el.style.top = y + 'px';
+            document.body.appendChild(el);
+            setTimeout(() => { el.remove(); }, 1200);
+        }
+
+        // --- Interaction Logic ---
+
+        function getGridPos(point) {
+            const offset = (GRID_SIZE * TILE_SIZE) / 2 - (TILE_SIZE / 2);
+            const x = Math.round((point.x + offset) / TILE_SIZE);
+            const z = Math.round((point.z + offset) / TILE_SIZE);
+            return { x, z };
+        }
+
+        function updateGhostVisuals() {
+            if (!state.selectedTool || !hoverMesh.visible) return;
+            raycaster.setFromCamera(pointer, camera);
+            const intersects = raycaster.intersectObject(scene.children.find(c=>c.userData.hitPlane));
+
+            if (intersects.length > 0) {
+                const pos = getGridPos(intersects[0].point);
+                const autoRot = getInitialSnapRotation(pos.x, pos.z);
+                ghostMesh.rotation.y = autoRot + state.buildRot;
+
+                const tool = BUILDINGS[state.selectedTool];
+                const valid = !state.grid[pos.x][pos.z] && 
+                              state.money >= tool.cost && 
+                              canBuild(tool) && 
+                              (tool.id === 'road' || isDoorFacingAnyRoad(pos.x, pos.z, ghostMesh.rotation.y));
+                
+                ghostMesh.children[0].traverse(c => {
+                    if(c.isMesh) c.material.color.setHex(valid ? 0xffffff : 0xff0000);
+                });
+            }
+        }
+
+        function onMove(e) {
+            pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+            pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(pointer, camera);
+            
+            const buildingIntersects = raycaster.intersectObjects(gridGroup.children, true);
+            tooltip.style.display = 'none';
+            if (buildingIntersects.length > 0) {
+                let target = buildingIntersects[0].object;
+                while(target.parent && target.parent !== gridGroup) target = target.parent;
+                const pos = getGridPos(target.position);
+                const data = state.grid[pos.x][pos.z];
+                if (data && data.def.income !== 0) {
+                    tooltip.style.display = 'block';
+                    tooltip.innerHTML = `<div>${data.def.name}</div><div>Income: <span class="${data.def.income > 0 ? 'income-pos' : 'income-neg'}">$${data.def.income}/tick</span></div>`;
+                    tooltip.style.left = (e.clientX + 15) + 'px';
+                    tooltip.style.top = (e.clientY + 15) + 'px';
+                }
+            }
+
+            const intersects = raycaster.intersectObject(scene.children.find(c=>c.userData.hitPlane));
+            if (intersects.length > 0) {
+                const pos = getGridPos(intersects[0].point);
+                if (pos.x >= 0 && pos.x < GRID_SIZE && pos.z >= 0 && pos.z < GRID_SIZE) {
+                    const wx = (pos.x * TILE_SIZE) - ((GRID_SIZE * TILE_SIZE)/2) + (TILE_SIZE/2);
+                    const wz = (pos.z * TILE_SIZE) - ((GRID_SIZE * TILE_SIZE)/2) + (TILE_SIZE/2);
+                    hoverMesh.position.set(wx, 0.1, wz);
+                    hoverMesh.visible = true;
+
+                    const tool = BUILDINGS[state.selectedTool];
+                    if (tool && state.selectedTool !== 'demolish') {
+                        ghostMesh.visible = true;
+                        ghostMesh.position.set(wx, 0, wz);
+                        const autoRot = getInitialSnapRotation(pos.x, pos.z);
+                        ghostMesh.rotation.y = autoRot + state.buildRot;
+
+                        if (ghostMesh.userData.type !== state.selectedTool) {
+                            while(ghostMesh.children.length) ghostMesh.remove(ghostMesh.children[0]);
+                            const m = createBuildingMesh(state.selectedTool);
+                            m.traverse(c => { if(c.isMesh) { 
+                                c.material = c.material.clone(); 
+                                c.material.transparent = true; c.material.opacity = 0.5; 
+                            }});
+                            ghostMesh.add(m);
+                            ghostMesh.userData.type = state.selectedTool;
+                        }
+
+                        const valid = !state.grid[pos.x][pos.z] && 
+                                      state.money >= tool.cost && 
+                                      canBuild(tool) && 
+                                      (tool.id === 'road' || isDoorFacingAnyRoad(pos.x, pos.z, ghostMesh.rotation.y));
+                        
+                        ghostMesh.children[0].traverse(c => {
+                            if(c.isMesh) c.material.color.setHex(valid ? 0xffffff : 0xff0000);
+                        });
+                    } else {
+                        ghostMesh.visible = false;
+                        hoverMesh.material.color.setHex(state.selectedTool === 'demolish' && state.grid[pos.x][pos.z] ? 0xff0000 : 0xffffff);
+                    }
+                } else {
+                    hoverMesh.visible = false; ghostMesh.visible = false;
+                }
+            } else {
+                hoverMesh.visible = false; ghostMesh.visible = false;
+            }
+        }
+
+        function onClick(e) {
+            if (e.button !== 0) return;
+            if (e.target.closest('.tool-btn') || e.target.closest('.modal')) return;
+            if (!state.selectedTool) return;
+
+            raycaster.setFromCamera(pointer, camera);
+            const intersects = raycaster.intersectObject(scene.children.find(c=>c.userData.hitPlane));
+            
+            if (intersects.length > 0) {
+                const pos = getGridPos(intersects[0].point);
+                if (pos.x >= 0 && pos.x < GRID_SIZE && pos.z >= 0 && pos.z < GRID_SIZE) {
+                    interactTile(pos.x, pos.z);
+                }
+            }
+        }
+
+        function canBuild(def) {
+            if (def.workersReq > 0 && state.population < def.workersReq) return false;
+            return true;
+        }
+
+        function interactTile(x, z) {
+            const existing = state.grid[x][z];
+            const tool = BUILDINGS[state.selectedTool];
+
+            if (state.selectedTool === 'demolish') {
+                if (existing) {
+                    if (state.money >= tool.cost) {
+                        state.money -= tool.cost;
+                        gridGroup.remove(existing.mesh);
+                        state.grid[x][z] = null;
+                        
+                        // IMPORTANT: Refresh neighbors after demolishing
+                        refreshRoadArea(x, z);
+
+                        recalcCap();
+                        updateUI();
+                        showToast("Cleared", '#ef476f');
+                    } else showToast("Need money!", '#ef476f');
+                }
+            } else {
+                if (existing) { showToast("Occupied!", '#ef476f'); return; }
+                if (state.money < tool.cost) { showToast("Need money!", '#ef476f'); return; }
+                if (!canBuild(tool)) { showToast(`Need ${tool.workersReq} Pop!`, '#ef476f'); return; }
+                
+                if (tool.id !== 'road' && !hasRoadConnection(x, z)) {
+                    showToast("Must connect to road!", '#ef476f');
+                    return;
+                }
+
+                const initialRot = getInitialSnapRotation(x, z);
+                const finalRot = initialRot + state.buildRot;
+                if (tool.id !== 'road' && !isDoorFacingAnyRoad(x, z, finalRot)) {
+                    showToast("Door must face road!", '#ef476f');
+                    return;
+                }
+
+                state.money -= tool.cost;
+                const mesh = createBuildingMesh(tool.id);
+                const wx = (x * TILE_SIZE) - ((GRID_SIZE * TILE_SIZE)/2) + (TILE_SIZE/2);
+                const wz = (z * TILE_SIZE) - ((GRID_SIZE * TILE_SIZE)/2) + (TILE_SIZE/2);
+                mesh.position.set(wx, 0, wz);
+                mesh.rotation.y = finalRot;
+                gridGroup.add(mesh);
+                
+                mesh.scale.set(0,0,0);
+                let s=0;
+                const pop = () => { s+=0.1; if(s>1)s=1; mesh.scale.set(s,s,s); if(s<1)requestAnimationFrame(pop); };
+                pop();
+
+                state.grid[x][z] = { type: tool.id, mesh: mesh, def: tool };
+
+                // IMPORTANT: Refresh visuals after building
+                refreshRoadArea(x, z);
+
+                recalcCap();
+                updateUI();
+                showToast(`Built ${tool.name}`, '#06d6a0');
+            }
+        }
+
+        function recalcCap() {
+            let cap = 0;
+            state.grid.forEach(row => row.forEach(t => { 
+                if(t && (t.type === 'house' || t.type === 'apartment')) {
+                    cap += t.def.popCap; 
+                }
+            }));
+            state.popCap = cap;
+        }
+
+        function economyTick() {
+            let income = 0;
+            state.grid.forEach(row => row.forEach(t => { 
+                if(t) {
+                    income += t.def.income;
+                    if (t.def.income !== 0) {
+                        spawnMoneyPopup(t.mesh.position, t.def.income);
+                    }
+                }
+            }));
+            state.money += income;
+            updateUI();
+        }
+
+        function populationTick() {
+            if (state.population < state.popCap) state.population++;
+            else if (state.population > state.popCap) state.population--;
+            updateUI();
+        }
+
+        function createToolbar() {
+            const t = document.getElementById('toolbar');
+            t.innerHTML = '';
+            Object.keys(BUILDINGS).forEach(k => {
+                const b = BUILDINGS[k];
+                const btn = document.createElement('button');
+                btn.className = 'tool-btn';
+                btn.innerHTML = `<span style="font-size:1.4rem">${b.icon}</span><span class="tool-name">${b.name}</span><span class="tool-cost">$${b.cost}</span>`;
+                btn.onclick = () => {
+                    document.querySelectorAll('.tool-btn').forEach(x => x.classList.remove('active'));
+                    if (state.selectedTool === k) {
+                        state.selectedTool = null;
+                        controls.enableZoom = true;
+                    } else { 
+                        state.selectedTool = k; 
+                        btn.classList.add('active'); 
+                        state.buildRot = 0;
+                        if(k !== 'demolish') controls.enableZoom = false;
+                        else controls.enableZoom = true;
+                    }
+                };
+                t.appendChild(btn);
+            });
+        }
+
+        function updateUI() {
+            document.getElementById('stat-money').innerText = '$' + state.money;
+            document.getElementById('stat-pop').innerText = state.population;
+            document.getElementById('stat-cap').innerText = state.popCap;
+            
+            let inc = 0;
+            state.grid.forEach(row => row.forEach(t => { if(t) inc += t.def.income; }));
+            const incEl = document.getElementById('stat-income');
+            incEl.innerText = (inc>=0?'+':'') + inc + '/2s';
+            incEl.style.color = inc >= 0 ? '#ffd700' : '#ef476f';
+        }
+
+        function showToast(msg, color) {
+            const c = document.getElementById('toast-area');
+            const el = document.createElement('div');
+            el.className = 'toast';
+            el.innerText = msg;
+            if(color) el.style.borderLeft = `4px solid ${color}`;
+            c.appendChild(el);
+            setTimeout(()=>el.remove(), 2600);
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function updateDebugInfo() {
+            if (!debugEl) return;
+
+            try {
+                const dir = new THREE.Vector3().copy(camera.position).sub(controls.target);
+                let directionText = "";
+                const x = Math.abs(dir.x);
+                const z = Math.abs(dir.z);
+
+                if (x > z) {
+                    directionText = dir.x > 0 ? "East (+X)" : "West (-X)";
+                } else if (z > x) {
+                    directionText = dir.z > 0 ? "South (+Z)" : "North (-Z)";
+                } else {
+                    directionText = "Center";
+                }
+
+                let angle = controls.getAzimuthalAngle();
+                while(angle < 0) angle += Math.PI * 2;
+                while(angle >= Math.PI * 2) angle -= Math.PI * 2;
+                
+                const deg = angle * 180 / Math.PI;
+                let angleText = deg.toFixed(0) + "°";
+
+                debugEl.innerText = "Facing: " + directionText + "\nAngle: " + angleText;
+                debugEl.style.backgroundColor = 'rgba(0,0,0,0.7)';
+            } catch (e) {
+                console.error("Debug Logic Error:", e);
+                debugEl.innerText = "ERROR: " + e.message;
+                debugEl.style.backgroundColor = '#ff0000';
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            updateDebugInfo();
+            updateCameraRotation();
+            controls.update();
+            updateAgents();
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
+```
